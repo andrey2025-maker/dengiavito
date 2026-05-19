@@ -136,23 +136,27 @@ def build_finance_calendar(
     *,
     year: int,
     month: int,
-    prefix: str = "fcal",
+    apartment_id: int,
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     prev_m, prev_y = (month - 1, year) if month > 1 else (12, year - 1)
     next_m, next_y = (month + 1, year) if month < 12 else (1, year + 1)
     rows.append(
         [
-            InlineKeyboardButton(text="←", callback_data=f"{prefix}_n:{prev_y}:{prev_m}"),
+            InlineKeyboardButton(
+                text="←", callback_data=f"fcal_n:{apartment_id}:{prev_y}:{prev_m}"
+            ),
             InlineKeyboardButton(
                 text=f"{MONTHS_RU[month]} {year}",
-                callback_data="cal_ignore",
+                callback_data="fcal_ignore",
             ),
-            InlineKeyboardButton(text="→", callback_data=f"{prefix}_n:{next_y}:{next_m}"),
+            InlineKeyboardButton(
+                text="→", callback_data=f"fcal_n:{apartment_id}:{next_y}:{next_m}"
+            ),
         ]
     )
     rows.append(
-        [InlineKeyboardButton(text=d, callback_data="cal_ignore") for d in WEEKDAYS_RU]
+        [InlineKeyboardButton(text=d, callback_data="fcal_ignore") for d in WEEKDAYS_RU]
     )
     cal = calendar.Calendar(firstweekday=0)
     for week in cal.monthdayscalendar(year, month):
@@ -160,18 +164,24 @@ def build_finance_calendar(
         for day in week:
             if day == 0:
                 row_buttons.append(
-                    InlineKeyboardButton(text=" ", callback_data="cal_ignore")
+                    InlineKeyboardButton(text=" ", callback_data="fcal_ignore")
                 )
             else:
                 d = date(year, month, day)
                 row_buttons.append(
                     InlineKeyboardButton(
                         text=str(day),
-                        callback_data=f"{prefix}_d:{d.isoformat()}",
+                        callback_data=f"fcal_d:{apartment_id}:{d.isoformat()}",
                     )
                 )
         rows.append(row_buttons)
-    rows.append([InlineKeyboardButton(text="❌ Отмена", callback_data="fin_cancel")])
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="❌ Отмена", callback_data=f"fin_can:{apartment_id}"
+            )
+        ]
+    )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

@@ -9,6 +9,7 @@ from bot.keyboards.inline import (
     apartment_actions_kb,
     apartments_list_kb,
     confirm_delete_kb,
+    finance_hub_kb,
 )
 from bot.states import ApartmentForm
 
@@ -173,38 +174,16 @@ async def add_cal(callback: CallbackQuery, state: FSMContext, db: Database) -> N
 
 
 @router.callback_query(IsAdminFilter(), F.data.startswith("add_fin:"))
-async def add_fin(callback: CallbackQuery, state: FSMContext) -> None:
-    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-
+async def add_fin(callback: CallbackQuery, db: Database) -> None:
     apt_id = int(callback.data.split(":")[1])
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="➕ Доход", callback_data=f"add_fin_in:{apt_id}"
-                ),
-                InlineKeyboardButton(
-                    text="➖ Расход", callback_data=f"add_fin_out:{apt_id}"
-                ),
-            ],
-            [InlineKeyboardButton(text="🔙 Назад", callback_data=f"add:{apt_id}")],
-        ]
+    apt = await db.get_apartment(apt_id)
+    if not apt:
+        await callback.answer("Квартира не найдена", show_alert=True)
+        return
+    from bot.handlers.finances import finance_hub_caption
+
+    await callback.message.edit_text(
+        await finance_hub_caption(db, apt_id),
+        reply_markup=finance_hub_kb(apt_id),
     )
-    await callback.message.edit_text("Выберите тип операции:", reply_markup=kb)
     await callback.answer()
-
-
-@router.callback_query(IsAdminFilter(), F.data.startswith("add_fin_in:"))
-async def add_fin_income(callback: CallbackQuery, state: FSMContext) -> None:
-    from bot.handlers.finances import start_finance_with_apt
-
-    apt_id = int(callback.data.split(":")[1])
-    await start_finance_with_apt(callback, state, apt_id, "income")
-
-
-@router.callback_query(IsAdminFilter(), F.data.startswith("add_fin_out:"))
-async def add_fin_expense(callback: CallbackQuery, state: FSMContext) -> None:
-    from bot.handlers.finances import start_finance_flow_apt
-
-    apt_id = int(callback.data.split(":")[1])
-    await start_finance_flow_apt(callback, state, apt_id, "expense")

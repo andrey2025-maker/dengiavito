@@ -62,6 +62,15 @@ class Database:
         self._conn.row_factory = aiosqlite.Row
         await self._conn.executescript(SCHEMA)
         await self._conn.commit()
+        await self._migrate_apartments_door_code()
+
+    async def _migrate_apartments_door_code(self) -> None:
+        rows = await self.fetchall("PRAGMA table_info(apartments)")
+        names = {r["name"] for r in rows}
+        if "door_code" not in names:
+            await self.execute(
+                "ALTER TABLE apartments ADD COLUMN door_code TEXT DEFAULT NULL"
+            )
 
     async def close(self) -> None:
         if self._conn:
@@ -135,12 +144,13 @@ class Database:
     # --- apartments ---
     async def list_apartments(self) -> list[aiosqlite.Row]:
         return await self.fetchall(
-            "SELECT id, name, address FROM apartments ORDER BY name"
+            "SELECT id, name, address, door_code FROM apartments ORDER BY name"
         )
 
     async def get_apartment(self, apt_id: int) -> aiosqlite.Row | None:
         return await self.fetchone(
-            "SELECT id, name, address FROM apartments WHERE id = ?", (apt_id,)
+            "SELECT id, name, address, door_code FROM apartments WHERE id = ?",
+            (apt_id,),
         )
 
     async def add_apartment(self, name: str, address: str | None) -> int:
@@ -157,6 +167,12 @@ class Database:
         await self.execute(
             "UPDATE apartments SET name = ?, address = ? WHERE id = ?",
             (name, address, apt_id),
+        )
+
+    async def update_apartment_door_code(self, apt_id: int, door_code: str | None) -> None:
+        await self.execute(
+            "UPDATE apartments SET door_code = ? WHERE id = ?",
+            (door_code, apt_id),
         )
 
     async def delete_apartment(self, apt_id: int) -> None:
@@ -301,7 +317,7 @@ class Database:
     # --- finance ---
     async def add_finance(
         self,
-        apartment_id: int | None,
+        apartment_id: int,
         record_type: str,
         record_date: date,
         amount: float,
@@ -333,12 +349,22 @@ class Database:
             "SELECT * FROM finance_records WHERE id = ?", (record_id,)
         )
 
-    async def list_finance_history(self, limit: int = 30) -> list[aiosqlite.Row]:
+    async def count_finance_by_apartment(self, apartment_id: int) -> int:
+        row = await self.fetchone(
+            "SELECT COUNT(*) AS c FROM finance_records WHERE apartment_id = ?",
+            (apartment_id,),
+        )
+        return int(row["c"]) if row else 0
+
+    async def list_finance_history_page(
+        self, apartment_id: int, offset: int, limit: int
+    ) -> list[aiosqlite.Row]:
         return await self.fetchall(
-            """SELECT f.*, a.name AS apt_name FROM finance_records f
-               LEFT JOIN apartments a ON a.id = f.apartment_id
-               ORDER BY record_date DESC, id DESC LIMIT ?""",
-            (limit,),
+            """SELECT * FROM finance_records
+               WHERE apartment_id = ?
+               ORDER BY record_date DESC, id DESC
+               LIMIT ? OFFSET ?""",
+            (apartment_id, limit, offset),
         )
 
     async def finance_sum_month(
@@ -358,7 +384,8 @@ class Database:
         else:
             row = await self.fetchone(
                 """SELECT COALESCE(SUM(amount), 0) AS s FROM finance_records
-                   WHERE record_type = ? AND record_date LIKE ?""",
+                   WHERE record_type = ? AND record_date LIKE ?
+                     AND apartment_id IS NOT NULL""",
                 (record_type, f"{prefix}%"),
             )
         return float(row["s"]) if row else 0.0

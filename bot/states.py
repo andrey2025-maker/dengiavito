@@ -21,3 +21,7 @@ class FinanceFlow(StatesGroup):
 
 class AdminAddFlow(StatesGroup):
     name = State()
+
+
+class CodeEditForm(StatesGroup):
+    new_code = State()

@@ -2,22 +2,140 @@ from __future__ import annotations
 
 from datetime import date
 
-from aiogram import Router, F
+from aiogram import Bot, Router, F
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from bot.database import Database
 from bot.filters.access import IsAdminFilter
-from bot.keyboards.inline import (
-    finance_categories_kb,
-    finance_main_kb,
-    skip_comment_kb,
-)
-from bot.keyboards.reply import main_menu_keyboard, main_menu_text
+from bot.keyboards.inline import finance_categories_kb, finance_hub_kb, skip_comment_kb
 from bot.services.calendar_kb import build_finance_calendar
 from bot.states import FinanceFlow
 
 router = Router()
+
+PAGE_SIZE = 10
+
+
+async def finance_hub_caption(db: Database, apt_id: int) -> str:
+    apt = await db.get_apartment(apt_id)
+    name = apt["name"] if apt else "?"
+    return f"💰 Финансы — {name}"
+
+
+def _fmt_history_line(r) -> str:
+    sign = "+" if r["record_type"] == "income" else "−"
+    amt = f"{r['amount']:,.0f}".replace(",", " ")
+    cat = f" · {r['category']}" if r["category"] else ""
+    return f"• {sign}{amt} ₽ · {r['record_date']}{cat}"
+
+
+def _history_keyboard(
+    apt_id: int, page: int, total_pages: int, rows: list
+) -> InlineKeyboardMarkup:
+    ikb: list[list[InlineKeyboardButton]] = []
+    for r in rows:
+        sign = "+" if r["record_type"] == "income" else "−"
+        amt = f"{r['amount']:,.0f}".replace(",", " ")
+        btn_text = f"🗑 {r['record_date']} {sign}{amt}"[:64]
+        ikb.append(
+            [
+                InlineKeyboardButton(
+                    text=btn_text,
+                    callback_data=f"fin_rm:{apt_id}:{r['id']}:{page}",
+                )
+            ]
+        )
+    nav: list[InlineKeyboardButton] = []
+    if page > 0:
+        nav.append(
+            InlineKeyboardButton(
+                text="◀", callback_data=f"fin_lst:{apt_id}:{page - 1}"
+            )
+        )
+    if page < total_pages - 1:
+        nav.append(
+            InlineKeyboardButton(
+                text="▶", callback_data=f"fin_lst:{apt_id}:{page + 1}"
+            )
+        )
+    if nav:
+        ikb.append(nav)
+    ikb.append(
+        [InlineKeyboardButton(text="🔙 К финансам", callback_data=f"fin_hub:{apt_id}")]
+    )
+    return InlineKeyboardMarkup(inline_keyboard=ikb)
+
+
+async def render_history_panel(
+    bot: Bot, chat_id: int, message_id: int, db: Database, apt_id: int, page: int
+) -> None:
+    total = await db.count_finance_by_apartment(apt_id)
+    if total == 0:
+        total_pages = 1
+        page = 0
+        rows = []
+    else:
+        total_pages = (total + PAGE_SIZE - 1) // PAGE_SIZE
+        page = max(0, min(page, total_pages - 1))
+        offset = page * PAGE_SIZE
+        rows = await db.list_finance_history_page(apt_id, offset, PAGE_SIZE)
+
+    apt = await db.get_apartment(apt_id)
+    name = apt["name"] if apt else "?"
+    lines = [
+        f"📋 История — {name}",
+        f"Страница {page + 1} из {total_pages}",
+        "",
+    ]
+    if not rows:
+        lines.append("Записей пока нет.")
+    else:
+        lines.extend(_fmt_history_line(r) for r in rows)
+
+    await bot.edit_message_text(
+        chat_id=chat_id,
+        message_id=message_id,
+        text="\n".join(lines),
+        reply_markup=_history_keyboard(apt_id, page, total_pages, rows),
+    )
+
+
+async def render_finance_hub(
+    bot: Bot, chat_id: int, message_id: int, db: Database, apt_id: int
+) -> None:
+    await bot.edit_message_text(
+        chat_id=chat_id,
+        message_id=message_id,
+        text=await finance_hub_caption(db, apt_id),
+        reply_markup=finance_hub_kb(apt_id),
+    )
+
+
+async def start_finance_flow_apt(
+    callback: CallbackQuery, state: FSMContext, apt_id: int, record_type: str
+) -> None:
+    if not callback.message:
+        return
+    today = date.today()
+    await state.set_state(FinanceFlow.date)
+    await state.update_data(
+        apartment_id=apt_id,
+        record_type=record_type,
+        fin_panel_mid=callback.message.message_id,
+        fin_panel_cid=callback.message.chat.id,
+        fcal_year=today.year,
+        fcal_month=today.month,
+    )
+    label = "➕ Доход" if record_type == "income" else "➖ Расход"
+    await callback.message.edit_text(
+        f"{label} — выберите дату:",
+        reply_markup=build_finance_calendar(
+            year=today.year,
+            month=today.month,
+            apartment_id=apt_id,
+        ),
+    )
 
 
 async def start_finance_with_apt(
@@ -26,68 +144,128 @@ async def start_finance_with_apt(
     await start_finance_flow_apt(callback, state, apt_id, record_type)
 
 
-async def start_finance_flow_apt(
-    callback: CallbackQuery, state: FSMContext, apt_id: int, record_type: str
-) -> None:
-    await state.update_data(apartment_id=apt_id, record_type=record_type)
-    await state.set_state(FinanceFlow.date)
-    today = date.today()
-    await state.update_data(fcal_year=today.year, fcal_month=today.month)
-    label = "➕ Доход" if record_type == "income" else "➖ Расход"
-    await callback.message.answer(
-        f"{label} — выберите дату:",
-        reply_markup=build_finance_calendar(
-            year=today.year, month=today.month, prefix="fcal"
-        ),
-    )
+@router.callback_query(IsAdminFilter(), F.data.startswith("fin_i:"))
+async def fin_income_apt(callback: CallbackQuery, state: FSMContext) -> None:
+    apt_id = int(callback.data.split(":")[1])
+    await start_finance_flow_apt(callback, state, apt_id, "income")
+    await callback.answer()
 
 
-@router.callback_query(IsAdminFilter(), F.data == "fin_income")
-async def fin_income(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.update_data(record_type="income", apartment_id=None)
-    await state.set_state(FinanceFlow.date)
-    today = date.today()
-    await state.update_data(fcal_year=today.year, fcal_month=today.month)
-    await callback.message.edit_text(
-        "➕ Доход — выберите дату:",
-        reply_markup=build_finance_calendar(
-            year=today.year, month=today.month, prefix="fcal"
-        ),
+@router.callback_query(IsAdminFilter(), F.data.startswith("fin_o:"))
+async def fin_expense_apt(callback: CallbackQuery, state: FSMContext) -> None:
+    apt_id = int(callback.data.split(":")[1])
+    await start_finance_flow_apt(callback, state, apt_id, "expense")
+    await callback.answer()
+
+
+@router.callback_query(IsAdminFilter(), F.data.startswith("fin_hub:"))
+async def fin_hub_back(callback: CallbackQuery, state: FSMContext, db: Database) -> None:
+    if not callback.message:
+        await callback.answer()
+        return
+    apt_id = int(callback.data.split(":")[1])
+    await state.clear()
+    await render_finance_hub(
+        callback.bot, callback.message.chat.id, callback.message.message_id, db, apt_id
     )
     await callback.answer()
 
 
-@router.callback_query(IsAdminFilter(), F.data == "fin_expense")
-async def fin_expense(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.update_data(record_type="expense", apartment_id=None)
-    await state.set_state(FinanceFlow.date)
-    today = date.today()
-    await state.update_data(fcal_year=today.year, fcal_month=today.month)
-    await callback.message.edit_text(
-        "➖ Расход — выберите дату:",
-        reply_markup=build_finance_calendar(
-            year=today.year, month=today.month, prefix="fcal"
-        ),
+@router.callback_query(IsAdminFilter(), F.data.startswith("fin_lst:"))
+async def fin_history_page(callback: CallbackQuery, db: Database) -> None:
+    if not callback.message:
+        await callback.answer()
+        return
+    _, aid, page_s = callback.data.split(":", 2)
+    apt_id, page = int(aid), int(page_s)
+    await render_history_panel(
+        callback.bot,
+        callback.message.chat.id,
+        callback.message.message_id,
+        db,
+        apt_id,
+        page,
     )
+    await callback.answer()
+
+
+@router.callback_query(IsAdminFilter(), F.data.startswith("fin_rm:"))
+async def fin_delete_row(callback: CallbackQuery, db: Database) -> None:
+    if not callback.message:
+        await callback.answer()
+        return
+    parts = callback.data.split(":")
+    _, apt_id_s, rid_s, page_s = parts[0], parts[1], parts[2], parts[3]
+    apt_id, rid, page = int(apt_id_s), int(rid_s), int(page_s)
+    row = await db.get_finance(rid)
+    if not row or row["apartment_id"] != apt_id:
+        await callback.answer("Запись не найдена", show_alert=True)
+        return
+    await db.delete_finance(rid)
+    total = await db.count_finance_by_apartment(apt_id)
+    total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE) if total else 1
+    new_page = min(page, total_pages - 1)
+    await render_history_panel(
+        callback.bot,
+        callback.message.chat.id,
+        callback.message.message_id,
+        db,
+        apt_id,
+        new_page,
+    )
+    await callback.answer("Удалено")
+
+
+@router.callback_query(IsAdminFilter(), F.data.startswith("fin_can:"))
+async def fin_cancel_calendar(callback: CallbackQuery, state: FSMContext, db: Database) -> None:
+    if not callback.message:
+        await callback.answer()
+        return
+    apt_id = int(callback.data.split(":")[1])
+    await state.clear()
+    await render_finance_hub(
+        callback.bot, callback.message.chat.id, callback.message.message_id, db, apt_id
+    )
+    await callback.answer()
+
+
+@router.callback_query(IsAdminFilter(), F.data == "fcal_ignore")
+async def fcal_ignore(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
 @router.callback_query(IsAdminFilter(), F.data.startswith("fcal_n:"))
 async def fcal_nav(callback: CallbackQuery, state: FSMContext) -> None:
-    _, year, month = callback.data.split(":")
-    await state.update_data(fcal_year=int(year), fcal_month=int(month))
-    data = await state.get_data()
-    kb = build_finance_calendar(
-        year=int(year), month=int(month), prefix="fcal"
+    if not callback.message:
+        await callback.answer()
+        return
+    _, apt_s, y_s, m_s = callback.data.split(":", 3)
+    apt_id, y, m = int(apt_s), int(y_s), int(m_s)
+    await state.update_data(
+        apartment_id=apt_id,
+        fcal_year=y,
+        fcal_month=m,
+        fin_panel_mid=callback.message.message_id,
+        fin_panel_cid=callback.message.chat.id,
     )
+    kb = build_finance_calendar(year=y, month=m, apartment_id=apt_id)
     await callback.message.edit_reply_markup(reply_markup=kb)
     await callback.answer()
 
 
 @router.callback_query(IsAdminFilter(), F.data.startswith("fcal_d:"))
 async def fcal_pick(callback: CallbackQuery, state: FSMContext) -> None:
-    iso = callback.data.split(":")[1]
-    await state.update_data(record_date=iso)
+    if not callback.message:
+        await callback.answer()
+        return
+    _, apt_s, iso = callback.data.split(":", 2)
+    apt_id = int(apt_s)
+    await state.update_data(
+        apartment_id=apt_id,
+        record_date=iso,
+        fin_panel_mid=callback.message.message_id,
+        fin_panel_cid=callback.message.chat.id,
+    )
     await state.set_state(FinanceFlow.amount)
     await callback.message.answer("Введите сумму (₽):")
     await callback.answer()
@@ -151,8 +329,14 @@ async def _save_finance(
     message: Message, state: FSMContext, db: Database, comment: str | None
 ) -> None:
     data = await state.get_data()
+    apt_id = data.get("apartment_id")
+    if not isinstance(apt_id, int):
+        await message.answer("Ошибка: квартира не выбрана. Откройте «➕ Добавление» → квартира → «💰 Финансы».")
+        await state.clear()
+        return
+
     record_id = await db.add_finance(
-        apartment_id=data.get("apartment_id"),
+        apartment_id=apt_id,
         record_type=data["record_type"],
         record_date=date.fromisoformat(data["record_date"]),
         amount=data["amount"],
@@ -160,67 +344,14 @@ async def _save_finance(
         comment=comment,
     )
     kind = "Доход" if data["record_type"] == "income" else "Расход"
+    panel_mid = data.get("fin_panel_mid")
+    panel_cid = data.get("fin_panel_cid")
+    await state.clear()
+
+    if panel_mid is not None and panel_cid is not None:
+        try:
+            await render_finance_hub(message.bot, panel_cid, panel_mid, db, apt_id)
+        except Exception:
+            pass
+
     await message.answer(f"✅ {kind} сохранён (№{record_id}).")
-    await state.clear()
-
-
-@router.callback_query(IsAdminFilter(), F.data == "fin_cancel")
-async def fin_cancel(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.clear()
-    await callback.message.answer("💰 Финансы", reply_markup=finance_main_kb())
-    await callback.answer()
-
-
-@router.callback_query(IsAdminFilter(), F.data == "fin_history")
-async def fin_history(callback: CallbackQuery, db: Database) -> None:
-    rows = await db.list_finance_history(25)
-    if not rows:
-        await callback.message.answer("История пуста.")
-        await callback.answer()
-        return
-    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-    from aiogram.utils.keyboard import InlineKeyboardBuilder
-
-    lines = ["📋 История:\n"]
-    builder = InlineKeyboardBuilder()
-    for r in rows:
-        sign = "+" if r["record_type"] == "income" else "−"
-        apt = f" ({r['apt_name']})" if r["apt_name"] else ""
-        cat = f" [{r['category']}]" if r["category"] else ""
-        lines.append(
-            f"{sign}{r['amount']:,.0f} ₽ — {r['record_date']}{apt}{cat}".replace(",", " ")
-        )
-        builder.button(
-            text=f"🗑 {r['record_date']} {sign}{r['amount']:,.0f}".replace(",", " "),
-            callback_data=f"fin_del:{r['id']}",
-        )
-    builder.adjust(1)
-    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="fin_back"))
-    await callback.message.answer(
-        "\n".join(lines[:15]),
-        reply_markup=builder.as_markup(),
-    )
-    await callback.answer()
-
-
-@router.callback_query(IsAdminFilter(), F.data.startswith("fin_del:"))
-async def fin_delete(callback: CallbackQuery, db: Database) -> None:
-    rid = int(callback.data.split(":")[1])
-    await db.delete_finance(rid)
-    await callback.answer("Удалено")
-    await callback.message.edit_text(callback.message.text + "\n\n🗑 Запись удалена.")
-
-
-@router.callback_query(IsAdminFilter(), F.data == "fin_back")
-async def fin_back(callback: CallbackQuery) -> None:
-    await callback.message.edit_text("💰 Финансы", reply_markup=finance_main_kb())
-    await callback.answer()
-
-
-@router.callback_query(IsAdminFilter(), F.data == "fin_home")
-async def fin_home(callback: CallbackQuery) -> None:
-    await callback.message.answer(
-        main_menu_text(),
-        reply_markup=main_menu_keyboard(),
-    )
-    await callback.answer()

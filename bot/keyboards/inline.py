@@ -69,15 +69,19 @@ def add_mode_kb(apt_id: int) -> InlineKeyboardMarkup:
     )
 
 
-def finance_main_kb() -> InlineKeyboardMarkup:
+def finance_hub_kb(apt_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="➕ Доход", callback_data="fin_income"),
-                InlineKeyboardButton(text="➖ Расход", callback_data="fin_expense"),
+                InlineKeyboardButton(text="➕ Доход", callback_data=f"fin_i:{apt_id}"),
+                InlineKeyboardButton(text="➖ Расход", callback_data=f"fin_o:{apt_id}"),
             ],
-            [InlineKeyboardButton(text="📋 История", callback_data="fin_history")],
-            [InlineKeyboardButton(text="🔙 Главное меню", callback_data="fin_home")],
+            [
+                InlineKeyboardButton(
+                    text="📋 История", callback_data=f"fin_lst:{apt_id}:0"
+                )
+            ],
+            [InlineKeyboardButton(text="🔙 Назад", callback_data=f"add:{apt_id}")],
         ]
     )
 
