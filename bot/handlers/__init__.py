@@ -6,6 +6,7 @@ from bot.handlers import (
     apartments,
     booking,
     codes,
+    excel_handlers,
     finances,
     menu,
     start,
@@ -17,6 +18,7 @@ def setup_routers() -> Router:
     root = Router()
     root.include_router(start.router)
     root.include_router(admin_handlers.router)
+    root.include_router(excel_handlers.router)
     root.include_router(menu.router)
     root.include_router(codes.router)
     root.include_router(apartments.router)

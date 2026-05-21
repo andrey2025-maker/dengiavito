@@ -10,6 +10,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from bot.config import get_settings
 from bot.database import Database
 from bot.handlers import setup_routers
+from bot.services.excel_scheduler import run_daily_excel_scheduler
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -45,10 +46,16 @@ async def main() -> None:
     dp.update.middleware(InjectMiddleware(db, settings))
     dp.include_router(setup_routers())
 
+    scheduler = asyncio.create_task(run_daily_excel_scheduler(bot, db, settings))
     try:
         logger.info("Бот запущен")
         await dp.start_polling(bot)
     finally:
+        scheduler.cancel()
+        try:
+            await scheduler
+        except asyncio.CancelledError:
+            pass
         await db.close()
         await bot.session.close()
 

@@ -20,6 +20,7 @@ async def stat_nav(callback: CallbackQuery, db: Database) -> None:
     await callback.message.edit_text(
         text,
         reply_markup=stats_nav_kb(int(year), int(month)),
+        parse_mode="HTML",
     )
     await callback.answer()
 

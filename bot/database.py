@@ -133,7 +133,7 @@ class Database:
 
     async def get_admins(self) -> list[aiosqlite.Row]:
         return await self.fetchall(
-            "SELECT user_id, name, is_owner FROM admins ORDER BY is_owner DESC, name"
+            "SELECT user_id, name, is_owner, created_at FROM admins ORDER BY is_owner DESC, name"
         )
 
     async def get_admin(self, user_id: int) -> aiosqlite.Row | None:
@@ -144,7 +144,7 @@ class Database:
     # --- apartments ---
     async def list_apartments(self) -> list[aiosqlite.Row]:
         return await self.fetchall(
-            "SELECT id, name, address, door_code FROM apartments ORDER BY name"
+            "SELECT id, name, address, door_code, created_at FROM apartments ORDER BY name"
         )
 
     async def get_apartment(self, apt_id: int) -> aiosqlite.Row | None:
@@ -405,3 +405,23 @@ class Database:
             (record_type, apartment_id, f"{prefix}%"),
         )
         return [(r["category"] or "Прочее", float(r["s"])) for r in rows]
+
+    # --- excel export ---
+    async def export_all_bookings(self) -> list[aiosqlite.Row]:
+        return await self.fetchall(
+            """SELECT b.id, b.apartment_id, a.name AS apartment_name,
+                      b.booking_date, b.amount_per_day, b.group_id, b.created_at
+               FROM bookings b
+               JOIN apartments a ON a.id = b.apartment_id
+               ORDER BY b.booking_date DESC, b.id DESC"""
+        )
+
+    async def export_all_finances(self) -> list[aiosqlite.Row]:
+        return await self.fetchall(
+            """SELECT f.id, f.apartment_id, a.name AS apartment_name,
+                      f.record_type, f.record_date, f.amount, f.category,
+                      f.comment, f.created_at
+               FROM finance_records f
+               LEFT JOIN apartments a ON a.id = f.apartment_id
+               ORDER BY f.record_date DESC, f.id DESC"""
+        )
